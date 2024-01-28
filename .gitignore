@@ -2,3 +2,4 @@
 /tempCodeRunnerFile.ipynb
 *.zip
 *.parquet
+.idea
