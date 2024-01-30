@@ -3,3 +3,4 @@
 *.zip
 *.parquet
 .idea
+.ipynb_checkpoints
