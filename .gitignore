@@ -4,3 +4,4 @@
 *.parquet
 .idea
 .ipynb_checkpoints
+*.code-workspace
