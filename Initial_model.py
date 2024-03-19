@@ -1,5 +1,6 @@
-# %%
 import os
+import random
+
 import numpy as np
 import pandas as pd
 import torch
@@ -12,6 +13,7 @@ from sklearn.model_selection import train_test_split
 from PIL import Image
 
 #----------------------------------------------------------------------------
+random.seed(42)
 # Parameters
 NUM_FILES = None
 NUM_CLASSES = 6 
@@ -63,6 +65,25 @@ class SpectrogramDataset(Dataset):
             spectrogram = self.transform(spectrogram)
         return spectrogram, label
 
+
+def convert_parquet_to_npy(input_folder, output_folder):
+    npy_output_folder = os.path.join(output_folder, 'npy_data')
+
+    # Ensure the output directory exists
+    os.makedirs(npy_output_folder, exist_ok=True)
+
+    for root, dirs, files in os.walk(input_folder):
+        for file in files:
+            if file.endswith('.parquet'):
+                parquet_path = os.path.join(root, file)
+                df = pd.read_parquet(parquet_path)
+                eeg_data = df.to_numpy()
+                relative_path = os.path.relpath(parquet_path, input_folder)
+
+                # Create the corresponding directory structure in the npy_data folder
+                output_subfolder = os.path.join(npy_output_folder, os.path.dirname(relative_path))
+                os.makedirs(output_subfolder, exist_ok=True)
+                np.save(os.path.join(output_subfolder, file.replace('.parquet', '.npy')), eeg_data)
 
 def read_data(data_folder, num_files=None) -> tuple[list, list, pd.DataFrame, pd.DataFrame]:
     """
@@ -313,8 +334,57 @@ for epoch in range(EPOCHS):
     if epoch % 10 == 0:
         print(f"Epoch {epoch+1}/{EPOCHS}, Validation Loss: {epoch_val_loss:.4f}")
 #------------------------------------------------------------------------------------------------------------------------
-# evaluate and save model
-from torchsummary import summary 
-summary(model, (3, 100, 100))
+# # evaluate and save model
+# from torchsummary import summary
+# summary(model, (3, 100, 100))
 
-torch.save(model, os.getcwd() + "/saved_model")
+# torch.save(model, os.getcwd() + "/saved_model")
+def convert_to_rgb(spectrogram):
+    # Normalize spectrogram to range [0, 255]
+    spectrogram = (spectrogram - np.min(spectrogram)) / (np.max(spectrogram) - np.min(spectrogram)) * 255
+    # Convert to PIL Image
+    spectrogram_image = Image.fromarray(spectrogram.astype('uint8'), 'L')
+    # Resize to 100x100
+    resize_transform = transforms.Resize((100, 100))
+    spectrogram_image = resize_transform(spectrogram_image)
+    # Convert to RGB
+    spectrogram_rgb = spectrogram_image.convert('RGB')
+    return spectrogram_rgb
+
+
+def predict_and_save(model, data, filename='submission.csv'):
+    model.eval()
+    with torch.no_grad():
+        spectrogram = data[0]  # Extract the single example from the list
+        spectrogram_rgb = convert_to_rgb(spectrogram)  # Convert to RGB
+        spectrogram_rgb = np.array(spectrogram_rgb)  # Convert PIL Image to numpy array
+        spectrogram_rgb = spectrogram_rgb.transpose(2, 0, 1)  # Transpose to (channels, height, width) format
+        spectrogram_rgb = torch.from_numpy(spectrogram_rgb)  # Convert to torch tensor
+        spectrogram_rgb = spectrogram_rgb.unsqueeze(0)  # Add batch dimension
+        spectrogram_rgb = spectrogram_rgb.to(device, dtype=torch.float32)  # Convert to the correct data type
+
+        # Perform inference on the preprocessed spectrogram
+        outputs = model(spectrogram_rgb)
+        probabilities = torch.sigmoid(outputs)  # Sigmoid to get probabilities
+        normalized_probs = probabilities / probabilities.sum()  # Normalize probabilities using KL Divergence
+
+    # Create a DataFrame with the normalized probabilities
+    columns = ['seizure_vote', 'lpd_vote', 'gpd_vote', 'lrda_vote', 'grda_vote', 'other_vote']
+    df = pd.DataFrame([normalized_probs.cpu().numpy().squeeze()], columns=columns)
+
+    # Add the eeg_id column based on the extracted label
+    df.insert(0, 'eeg_id', test_labels['eeg_id'].iloc[0])
+
+    # Get the current working directory
+    current_dir = os.getcwd()
+    # Combine the current directory and filename to get the full path
+    full_path = os.path.join(current_dir, filename)
+
+    # Reorder columns with 'eeg_id' as the first column
+    df = df[['eeg_id', 'seizure_vote', 'lpd_vote', 'gpd_vote', 'lrda_vote', 'grda_vote', 'other_vote']]
+
+    # Save the DataFrame to a CSV file in the current directory
+    df.to_csv(full_path, index=False)
+
+
+predict_and_save(model, test_spec, filename='submission.csv')
